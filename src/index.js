@@ -1,79 +1,69 @@
 import { getSupabaseAdmin } from "./db.js";
-import { seedOnce } from "./seed.js";
-import { getXClient } from "./x-client.js";
+import { generateTweet } from "./ai.js";
+import { publishTweet } from "./publish.js";
 
-async function postOneDraftIfEnabled(supabase) {
-  if (process.env.X_POST_DRAFTS !== "true") {
-    console.log("[growth-worker] X_POST_DRAFTS!=true, not posting.");
-    return;
-  }
+const POST_INTERVAL_HOURS = 24;
 
-  const x = getXClient();
-
-  // 1) Fetch one draft
-  const { data: draft, error } = await supabase
+async function shouldPost(supabase) {
+  const { data } = await supabase
     .schema("growth")
-    .from("drafts")
-    .select("*")
-    .eq("platform", "x")
-    .eq("status", "drafted")
-    .order("created_at", { ascending: true })
-    .limit(1)
+    .from("meta")
+    .select("value")
+    .eq("key", "last_tweet_at")
     .maybeSingle();
 
-  if (error) throw new Error("Fetch draft failed: " + error.message);
-  if (!draft) {
-    console.log("[growth-worker] No drafted posts found.");
+  if (!data) return true;
+
+  const last = new Date(data.value);
+  const now = new Date();
+  const diffHours = (now - last) / (1000 * 60 * 60);
+
+  return diffHours >= POST_INTERVAL_HOURS;
+}
+
+async function updateLastPost(supabase) {
+  const now = new Date().toISOString();
+
+  await supabase
+    .schema("growth")
+    .from("meta")
+    .upsert({
+      key: "last_tweet_at",
+      value: now,
+    });
+}
+
+async function runOnce() {
+  console.log("[growth-worker] tick");
+
+  const supabase = getSupabaseAdmin();
+
+  const ok = await shouldPost(supabase);
+  if (!ok) {
+    console.log("[growth-worker] Not time yet");
     return;
   }
 
-  // 2) Post tweet
-  console.log("[growth-worker] Posting draft id:", draft.id);
-  const res = await x.v2.tweet(draft.text);
-  const tweetId = res?.data?.id;
-  console.log("[growth-worker] Tweet posted:", tweetId);
+  const tweet = await generateTweet();
+  console.log("[growth-worker] Generated:", tweet);
 
-  // 3) Mark draft as posted
-  const { error: uErr } = await supabase
-    .schema("growth")
-    .from("drafts")
-    .update({
-      status: "posted",
-      metrics: { ...(draft.metrics || {}), tweet_id: tweetId, posted_at: new Date().toISOString() }
-    })
-    .eq("id", draft.id);
+  const res = await publishTweet(tweet);
+  console.log("[growth-worker] Posted:", res.tweetId);
 
-  if (uErr) throw new Error("Update draft failed: " + uErr.message);
+  await updateLastPost(supabase);
 }
 
 async function main() {
   console.log("[growth-worker] boot");
-  const supabase = getSupabaseAdmin();
 
-  if (process.env.RUN_SEED === "true") {
-    console.log("[growth-worker] RUN_SEED=true, seeding...");
-    const result = await seedOnce(supabase);
-    console.log("[growth-worker] seed ok:", result);
-    console.log("[growth-worker] IMPORTANT: set RUN_SEED=false after verification.");
-  } else {
-    console.log("[growth-worker] RUN_SEED!=true, idle mode (no-op).");
-  }
+  // kjør umiddelbart ved deploy
+  await runOnce();
 
-  // Try post once on boot
-  await postOneDraftIfEnabled(supabase);
-
-  // Heartbeat + optional periodic posting
-  setInterval(async () => {
-    console.log("[growth-worker] heartbeat", new Date().toISOString());
-
-    // Optional periodic posting
-    if (process.env.X_POST_EVERY_MINUTES) {
-      await postOneDraftIfEnabled(supabase);
-    }
-  }, 60_000);
+  // sjekk hver time (men poster maks 1/dag)
+  setInterval(runOnce, 60 * 60 * 1000);
 }
 
 main().catch((err) => {
-  console.error("[growth-worker] fatal:", err);
+  console.error("[growth-worker] fatal", err);
   process.exit(1);
 });
