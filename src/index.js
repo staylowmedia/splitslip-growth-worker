@@ -1,69 +1,40 @@
 import { getSupabaseAdmin } from "./db.js";
-import { generateTweet } from "./ai.js";
-import { publishTweet } from "./publish.js";
-
-const POST_INTERVAL_HOURS = 24;
-
-async function shouldPost(supabase) {
-  const { data } = await supabase
-    .schema("growth")
-    .from("meta")
-    .select("value")
-    .eq("key", "last_tweet_at")
-    .maybeSingle();
-
-  if (!data) return true;
-
-  const last = new Date(data.value);
-  const now = new Date();
-  const diffHours = (now - last) / (1000 * 60 * 60);
-
-  return diffHours >= POST_INTERVAL_HOURS;
-}
-
-async function updateLastPost(supabase) {
-  const now = new Date().toISOString();
-
-  await supabase
-    .schema("growth")
-    .from("meta")
-    .upsert({
-      key: "last_tweet_at",
-      value: now,
-    });
-}
-
-async function runOnce() {
-  console.log("[growth-worker] tick");
-
-  const supabase = getSupabaseAdmin();
-
-  const ok = await shouldPost(supabase);
-  if (!ok) {
-    console.log("[growth-worker] Not time yet");
-    return;
-  }
-
-  const tweet = await generateTweet();
-  console.log("[growth-worker] Generated:", tweet);
-
-  const res = await publishTweet(tweet);
-  console.log("[growth-worker] Posted:", res.tweetId);
-
-  await updateLastPost(supabase);
-}
+import { seedOnce } from "./seed.js";
+import { publishOne } from "./publish.js";
 
 async function main() {
   console.log("[growth-worker] boot");
+  const supabase = getSupabaseAdmin();
 
-  // kjør umiddelbart ved deploy
-  await runOnce();
+  // Optional: seed once (creates a draft in growth.drafts)
+  if (process.env.RUN_SEED === "true") {
+    console.log("[growth-worker] RUN_SEED=true, seeding...");
+    const result = await seedOnce(supabase);
+    console.log("[growth-worker] seed ok:", result);
+    console.log("[growth-worker] IMPORTANT: set RUN_SEED=false after verification.");
+  } else {
+    console.log("[growth-worker] RUN_SEED!=true, normal mode.");
+  }
 
-  // sjekk hver time (men poster maks 1/dag)
-  setInterval(runOnce, 60 * 60 * 1000);
+  // Try publish once on boot
+  try {
+    await publishOne();
+  } catch (e) {
+    console.error("[growth-worker] publish error on boot:", e);
+  }
+
+  // Check every hour; publishOne enforces 24h minimum via X_MIN_HOURS_BETWEEN_POSTS
+  setInterval(async () => {
+    console.log("[growth-worker] heartbeat", new Date().toISOString());
+    try {
+      await publishOne();
+    } catch (e) {
+      console.error("[growth-worker] publish error:", e);
+    }
+  }, 60 * 60 * 1000);
 }
 
 main().catch((err) => {
-  console.error("[growth-worker] fatal", err);
+  console.error("[growth-worker] fatal:", err);
   process.exit(1);
 });
