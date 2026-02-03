@@ -2,37 +2,27 @@
 import { TwitterApi } from "twitter-api-v2";
 
 export function getXClient() {
-  // ---- Prefer OAuth 1.0a user context if present ----
-  const o1Key = process.env.X_OAUTH1_CONSUMER_KEY;
-  const o1Secret = process.env.X_OAUTH1_CONSUMER_SECRET;
-  const o1Access = process.env.X_OAUTH1_ACCESS_TOKEN;
-  const o1AccessSecret = process.env.X_OAUTH1_ACCESS_TOKEN_SECRET;
+  // --- OAuth 1.0a user context (recommended for "bot posts") ---
+  const appKey = (process.env.X_CONSUMER_KEY || "").trim();
+  const appSecret = (process.env.X_CONSUMER_SECRET || "").trim();
+  const accessToken = (process.env.X_ACCESS_TOKEN || "").trim();
+  const accessSecret = (process.env.X_ACCESS_TOKEN_SECRET || "").trim();
 
-  if (o1Key && o1Secret && o1Access && o1AccessSecret) {
-    return new TwitterApi({
-      appKey: o1Key,
-      appSecret: o1Secret,
-      accessToken: o1Access,
-      accessSecret: o1AccessSecret,
-    });
+  if (appKey && appSecret && accessToken && accessSecret) {
+    return new TwitterApi({ appKey, appSecret, accessToken, accessSecret });
   }
 
-  // ---- Fallback: OAuth2 (refresh token) if present ----
-  const cId = process.env.X_OAUTH2_CLIENT_ID;
-  const cSecret = process.env.X_OAUTH2_CLIENT_SECRET;
-  const refreshToken = process.env.X_OAUTH2_REFRESH_TOKEN;
+  // --- OAuth2 placeholder (optional later) ---
+  const clientId = (process.env.X_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.X_CLIENT_SECRET || "").trim();
+  const refreshToken = (process.env.X_REFRESH_TOKEN || "").trim();
 
-  if (cId && cSecret && refreshToken) {
-    // twitter-api-v2 kan bruke refresh token i OAuth2 flow,
-    // men ofte håndteres token refresh i egen kode.
-    // Her lar vi det være en "hook" du kan bygge videre på.
-    return new TwitterApi({
-      clientId: cId,
-      clientSecret: cSecret,
-    });
+  if (clientId && clientSecret && refreshToken) {
+    // We'll implement OAuth2 refresh flow later if needed.
+    return new TwitterApi({ clientId, clientSecret });
   }
 
   throw new Error(
-    "No valid X auth found. Set OAuth1 vars (recommended) or OAuth2 vars."
+    "No valid X auth found. Set X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET (OAuth1)."
   );
 }
